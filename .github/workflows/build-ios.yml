@@ -1,0 +1,101 @@
+name: Build reVC for iOS 9 (iPad 2 ARMv7)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build reVC IPA (iOS 9.0 ARMv7)
+    runs-on: macos-13
+
+    steps:
+      - name: Checkout reVC (miami branch)
+        uses: actions/checkout@v4
+        with:
+          repository: 'GTAmodding/reVC'
+          ref: 'miami'
+          submodules: 'recursive'
+          fetch-depth: 1
+
+      - name: Select Xcode 13.4.1 (Native ARMv7 32-bit Toolchain)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_13.4.1.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install Build Tools & ldid
+        run: |
+          brew install cmake ninja
+          brew install ldid || {
+            curl -fsSL -o /usr/local/bin/ldid https://raw.githubusercontent.com/ProcursusTeam/ldid/main/ldid
+            chmod +x /usr/local/bin/ldid
+          }
+
+      - name: Setup iOS 9.0 ARMv7 CMake Toolchain
+        run: |
+          mkdir -p cmake
+          cat << 'EOF' > cmake/ios-armv7.toolchain.cmake
+          set(CMAKE_SYSTEM_NAME iOS)
+          set(CMAKE_SYSTEM_VERSION 9.0)
+          set(CMAKE_OSX_SYSROOT iphoneos)
+          set(CMAKE_OSX_DEPLOYMENT_TARGET "9.0")
+          set(CMAKE_OSX_ARCHITECTURES "armv7")
+          set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-a9 -mfpu=neon -mthumb -Os -DGLES_SILENCE_DEPRECATION=1")
+          set(CMAKE_CXX_FLAGS_INIT "-mcpu=cortex-a9 -mfpu=neon -mthumb -Os -DGLES_SILENCE_DEPRECATION=1 -std=c++11")
+          set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO")
+          set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO")
+          set(CMAKE_XCODE_ATTRIBUTE_ENABLE_BITCODE "NO")
+          EOF
+
+      - name: Configure CMake
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -G Xcode \
+            -DCMAKE_TOOLCHAIN_FILE=../cmake/ios-armv7.toolchain.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=9.0 \
+            -DCMAKE_OSX_ARCHITECTURES=armv7 \
+            -DRW_GL3=ON \
+            -DRW_GLES2=ON \
+            -DREVC_AUDIO=OPENAL \
+            -DGTA_TOUCH_UI=ON \
+            -DTOUCH_CONTROLS=ON
+
+      - name: Compile reVC Binary (xcodebuild)
+        run: |
+          cd build
+          XCODE_PROJ=$(find . -name "*.xcodeproj" -maxdepth 2 | head -n 1)
+          xcodebuild \
+            -project "$XCODE_PROJ" \
+            -scheme reVC \
+            -configuration Release \
+            -sdk iphoneos \
+            -arch armv7 \
+            IPHONEOS_DEPLOYMENT_TARGET=9.0 \
+            ARCHS=armv7 \
+            ONLY_ACTIVE_ARCH=NO \
+            ENABLE_BITCODE=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package Payload & Fake-Sign
+        run: |
+          mkdir -p package/Payload
+          APP_PATH=$(find build -name "reVC.app" -type d | head -n 1)
+          cp -r "$APP_PATH" package/Payload/
+          APP_BIN="package/Payload/reVC.app/reVC"
+          chmod +x "$APP_BIN"
+          ldid -S "$APP_BIN" || true
+          cd package
+          zip -r9 ../reVC_iPad2_iOS9.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reVC_iPad2_iOS9
+          path: reVC_iPad2_iOS9.ipa
